@@ -17,7 +17,7 @@ npx -y skills add . --list
 Install with:
 
 ```bash
-npx skill install David-Magdy/journal-skill
+npx skills add David-Magdy/journal-skill
 ```
 
 ## Setup
