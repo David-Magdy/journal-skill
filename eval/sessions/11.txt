@@ -1,0 +1,20 @@
+User: Users report that when opening more than 6 tabs of our real-time monitoring web app, all new tabs hang loading indefinitely and stop updating.
+Assistant: Are you using Server-Sent Events (SSE) or long polling over HTTP/1.1?
+User: Yes, each tab opens a persistent SSE connection to `/api/stream/metrics`.
+Assistant: The HTTP/1.1 specification imposes a strict limit of 6 concurrent TCP connections per domain in modern browsers (Chrome, Firefox). If a user opens 6 tabs with open SSE streams, all 6 persistent TCP connections are consumed. Any subsequent request—including fetching HTML, CSS, or API endpoints—blocks in the browser network queue waiting for an available socket.
+User: Can we solve this without switching our entire frontend to WebSockets?
+Assistant: Yes, enable HTTP/2 on your reverse proxy (e.g. Nginx). Under HTTP/2, all tabs share a single multiplexed TCP connection per origin, allowing hundreds of concurrent bidirectional streams without hitting the browser connection ceiling.
+User: We also noticed events arrive in batches every 30 seconds instead of streaming in real-time.
+Assistant: That is reverse-proxy buffering. By default, Nginx buffers upstream responses until `proxy_buffer_size` (usually 4KB–8KB) fills up before flushing to the client. Disable buffering for SSE responses:
+```nginx
+location /api/stream/ {
+    proxy_pass http://backend;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_set_header Connection '';
+    proxy_http_version 1.1;
+    chunked_transfer_encoding off;
+}
+```
+User: Or from the backend, sending response header `X-Accel-Buffering: no` instructs Nginx to disable buffering dynamically.
+Assistant: Exactly. Adding `X-Accel-Buffering: no` and enabling HTTP/2 on the ingress TLS listener completely resolved both the tab starvation and buffering delays.

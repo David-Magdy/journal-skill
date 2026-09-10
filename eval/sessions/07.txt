@@ -1,0 +1,21 @@
+User: I set up a WireGuard tunnel (`wg0`) between our cloud VPC and our bare-metal backup node.
+User: `ping` works with 0% packet loss, and I can open an interactive SSH shell over the tunnel.
+User: But when I try `rsync` or `curl -O https://backups.internal/image.tar.gz`, the transfer hangs indefinitely after a few kilobytes.
+Assistant: This is the classic Path MTU (PMTU) blackhole symptom. Interactive SSH keystrokes and small ICMP echo pings easily fit under small packet sizes. When you send large files, TCP attempts to use the standard 1500-byte Ethernet MTU. WireGuard encapsulates packets with an additional 60 to 80 bytes of UDP/IP overhead, exceeding the physical link MTU.
+User: Why doesn't Path MTU Discovery automatically negotiate a smaller packet size?
+Assistant: Intermediate routers or cloud security groups often drop ICMP "Fragmentation Needed" (Type 3, Code 4) packets. The sending host sets the DF (Don't Fragment) bit in the IP header, the encapsulating router drops the packet, and because the ICMP error is blocked, the sender retransmits the full-sized frame forever.
+User: How do we diagnose this precisely?
+Assistant: Run a sweep ping with the DF bit set to find the exact MTU threshold:
+```bash
+ping -M do -s 1420 backups.internal
+```
+If 1420 succeeds but 1422 fails with "Frag needed and DF set", your tunnel MTU is 1420 bytes.
+User: How do we fix this on the WireGuard gateway?
+Assistant: Two solutions:
+1. Ensure the WireGuard interface MTU is set to 1420 (or 1360 on IPv6) in `wg0.conf`.
+2. Enable TCP MSS clamping in iptables so TCP SYN packets automatically negotiate maximum segment sizes that fit the tunnel:
+```bash
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+```
+User: I added the iptables TCPMSS rule on the gateway node and re-ran the curl transfer. It immediately ramped up to full line speed (850 Mbps) without stalling.
+Assistant: TCPMSS clamping intercepts the initial TCP three-way handshake and rewrites the negotiated MSS to match the interface MTU, bypassing broken PMTUD paths entirely.

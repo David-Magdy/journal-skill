@@ -1,0 +1,17 @@
+[... earlier conversation truncated by context window ...]
+User: Continuing from before, our embedded SQLite database file is only 50 MB, but `app.db-wal` has grown to 18 GB and disk space is nearly exhausted.
+Assistant: A growing WAL file means SQLite's write-ahead log checkpointing is starved. In WAL mode, writers append changes to the `-wal` file. SQLite automatically checkpoints at 1000 pages, transferring WAL frames back to the main DB file and truncating the log.
+User: Why would that automatic checkpoint fail?
+Assistant: Checkpoint starvation occurs when at least one reader connection holds an active read transaction open at an older snapshot of the database. SQLite cannot checkpoint frames beyond the oldest active reader's read transaction pointer without invalidating that reader's view.
+User: Let me check our background worker threads in Python:
+```python
+# Thread worker:
+cursor = db.cursor()
+cursor.execute("SELECT id, payload FROM queue WHERE processed = 0")
+for row in cursor:
+    time.sleep(5) # Long external API call while holding generator open!
+    mark_processed(row[0])
+```
+Assistant: That is the cause. Iterating over the cursor generator with `time.sleep(5)` keeps the SQLite shared read lock active across the entire loop. Writers continue writing new frames, but the WAL checkpoint cannot truncate because the reader is pinned to the old WAL header.
+User: Fetching all rows immediately (`rows = cursor.fetchall()`) and closing the cursor releases the read transaction before the slow network calls.
+Assistant: Exactly. Once you close the read transaction, run `PRAGMA wal_checkpoint(TRUNCATE);` to flush pending frames and reset the WAL file to zero bytes.

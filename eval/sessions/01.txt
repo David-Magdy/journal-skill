@@ -1,0 +1,20 @@
+User: I am training a Vision Transformer with DINOv2 self-supervised learning on custom aerial imagery, but the representations keep collapsing. The pairwise cosine similarity across random batch pairs is over 0.98 after epoch 2.
+Assistant: Contrastive and self-distillation ViTs frequently suffer from representation collapse when cross-entropy or teacher-student alignment lacks a dispersion force. Have you enabled KoLeo (Kozachenko-Leonenko) regularization?
+User: No, what does KoLeo actually do mathematically?
+Assistant: KoLeo is a differential entropy estimator based on k-nearest neighbors (with k=1). On the unit hypersphere, maximizing the Kozachenko-Leonenko entropy corresponds to minimizing the negative log-distance between each embedding and its nearest neighbor in the batch:
+L_koleo = - (1 / n) * sum_{i=1}^n ln(min_{j != i} ||z_i - z_j||_2).
+This forces the normalized vectors to spread uniformly over the sphere without requiring negative pairs.
+User: Let me try writing the loss in PyTorch:
+```python
+def koleo_loss(p):
+    # p shape: (B, D)
+    p = torch.nn.functional.normalize(p, dim=-1, p=2)
+    dots = torch.mm(p, p.t())
+    # Numerical issues here?
+    dists = torch.sqrt(torch.clamp(2.0 - 2.0 * dots, min=1e-8))
+    dists.fill_diagonal_(float('inf'))
+    min_dist, _ = torch.min(dists, dim=1)
+    return -torch.mean(torch.log(min_dist + 1e-8))
+```
+Assistant: That formulation avoids explicit `torch.cdist` overhead by leveraging the identity ||x - y||^2 = 2 - 2*(x . y) on unit-norm vectors. Clamp the inner argument to prevent negative numbers under float precision before sqrt.
+User: Added `loss = loss_student_teacher + 0.1 * koleo_loss(student_out)` and ran 50 steps. Average pairwise cosine similarity dropped from 0.98 to 0.14. It actually spread across the hypersphere.

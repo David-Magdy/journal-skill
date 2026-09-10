@@ -1,0 +1,19 @@
+User: Our asynchronous Python service running FastAPI and Uvicorn is intermittently dropping WebSocket connections and failing health checks with 504 gateway timeouts under moderate load.
+Assistant: Have you turned on asyncio debug mode? The event loop can report any coroutine or callback that blocks the single execution thread for longer than a configurable threshold.
+User: I enabled `PYTHONASYNCIODEBUG=1` and restarted. Now the logs show:
+```text
+WARNING:asyncio:Executing <Task pending name='Task-412' coro=<fetch_user_webhook()>> took 1.482 seconds!
+WARNING:asyncio:Executing <Task pending name='Task-509' coro=<sign_payload()>> took 0.650 seconds!
+```
+Why are those coroutines blocking the event loop for hundreds of milliseconds?
+Assistant: `fetch_user_webhook` is likely performing a synchronous network call or standard library DNS resolution (`socket.getaddrinfo`), which runs blocking C code in glibc and cannot be interrupted by the Python event loop. And `sign_payload` is doing CPU-bound RSA/Ed25519 signing or Argon2 password hashing.
+User: But `fetch_user_webhook` uses `httpx.AsyncClient`!
+Assistant: Check if you are passing raw hostnames instead of an existing connection pool or IP. Python's `asyncio` default DNS resolver on Linux delegates to a thread pool only if properly configured, but older libraries invoke `socket.gethostbyname` synchronously. Even worse, CPU-intensive hashing inside `async def` starves all other coroutines because Python cannot context-switch without an `await`.
+User: How do we properly offload both blocking C calls and CPU-intensive signing?
+Assistant: Use `asyncio.to_thread` (Python 3.9+) or `loop.run_in_executor`:
+```python
+# Offload CPU-bound signing:
+signature = await asyncio.to_thread(crypto_signer.sign, payload)
+```
+User: Wrapped the cryptographic signing and legacy database helper in `asyncio.to_thread()`. The asyncio debug warnings vanished, and p99 latency dropped from 2100ms to 24ms.
+Assistant: Remember: an `async def` function that does not hit an `await` during heavy execution is identical to blocking synchronous code.

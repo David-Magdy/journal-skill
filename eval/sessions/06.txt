@@ -1,0 +1,17 @@
+User: I am compiling a shared plugin library in CMake on Ubuntu x86_64, and the linker errors out:
+```text
+/usr/bin/ld: libcommon_util.a(crypto.cpp.o): relocation R_X86_64_PC32 against symbol `sha256_init' can not be used when making a shared object; recompile with -fPIC
+/usr/bin/ld: final link failed: bad value
+```
+I added `set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")` in my root CMakeLists.txt, but it still fails.
+Assistant: Modifying `CMAKE_CXX_FLAGS` often fails to propagate to static libraries built as submodules or external dependencies if they configure their own compile options or use modern CMake target properties.
+User: `libcommon_util.a` is created via `add_library(common_util STATIC ...)`. Why does x86_64 specifically require `-fPIC` for static code linked into a `.so`?
+Assistant: On x86_64, code in a shared object (`.so`) must be position-independent so the dynamic linker (`ld.so`) can load it at any virtual address without modifying machine instructions at load time. Relocation `R_X86_64_PC32` is a 32-bit PC-relative offset, which cannot span the 64-bit address space when relocated into dynamic library memory maps.
+User: What is the clean, modern CMake fix that works across target dependencies?
+Assistant: Set the `POSITION_INDEPENDENT_CODE` property globally or directly on the target:
+```cmake
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Or per-target:
+set_target_properties(common_util PROPERTIES POSITION_INDEPENDENT_CODE ON)
+```
+User: Setting `set(CMAKE_POSITION_INDEPENDENT_CODE ON)` before the `add_subdirectory(deps)` calls solved it immediately. `common_util.a` was rebuilt with `-fPIC`, and the `.so` linked cleanly.

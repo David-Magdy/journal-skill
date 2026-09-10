@@ -1,0 +1,21 @@
+User: Our backend process suddenly threw `OSError: [Errno 24] Too many open files`. Running `lsof` hangs because our server mounts several degraded NFS shares. How do I inspect what file descriptors this process has open without hanging on NFS?
+Assistant: Don't use `lsof` when NFS is flaky; `lsof` stats every mounted filesystem. Instead, query Linux `/proc` directly for that specific PID. It is purely in-memory and will never block on network filesystems:
+```bash
+ls -l /proc/$PID/fd
+```
+User: Nice, running `ls -l /proc/14821/fd | wc -l` gives 65536. It hit the `ulimit -n` limit. When I sample the targets:
+```text
+lrwx------ 1 app app 64 Sep 7 10:14 982 -> socket:[9482103]
+lrwx------ 1 app app 64 Sep 7 10:14 983 -> socket:[9482104]
+```
+Almost all of them are sockets. How do I find out what remote hosts or states these socket inodes belong to?
+Assistant: Use `ss` with the socket inode filter. You can extract the inode numbers from `/proc/<pid>/fd` and match them:
+```bash
+ss -tina '( sport = :8080 or dport = :8080 )'
+```
+Or check socket state distribution across the entire system for that port:
+```bash
+ss -tan state close-wait | grep 14821
+```
+User: Running `ss -tan state close-wait` shows 60,000 connections in `CLOSE_WAIT`!
+Assistant: `CLOSE_WAIT` means the remote client closed the TCP connection (sent FIN), the Linux kernel acknowledged it, but your application code never called `close()` on the socket. Look for an HTTP client or webhook handler missing `response.Body.Close()` or an unhandled exception before closing the connection.

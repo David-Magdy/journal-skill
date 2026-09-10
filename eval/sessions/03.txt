@@ -1,0 +1,24 @@
+User: Training our ViT with KoLeo was going smoothly until we switched on PyTorch AMP (torch.cuda.amp.autocast(dtype=torch.float16)). Around step 320, the KoLeo loss suddenly became NaN, and the whole model diverged.
+Assistant: In FP16, nearest-neighbor calculations are prone to gradient singularities at zero distance. There are two primary triggers in self-supervised pipelines:
+1. Multi-crop or identical augmented views in the same batch can have pairwise distance equal to zero (or underflow to 0.0 in FP16).
+2. The derivative of Euclidean distance d/dx(sqrt(x)) = 1 / (2*sqrt(x)) diverges to infinity as x -> 0. In FP16, this overflows to Inf, which multiplies by zero in subsequent backward passes to produce NaN.
+User: How do we guard against this in the KoLeo computation?
+Assistant: First, ensure you are masking not just self-indices, but also matching multi-crop views originating from the same source image. Second, compute Euclidean distance in float32 and enforce a strict lower bound clamp before the logarithm:
+```python
+with torch.cuda.amp.autocast(enabled=False):
+    p = p.float()
+    # Mask diagonal and identical sample pairs
+    dots = torch.mm(p, p.t())
+    # Safe distance: clamp dot products to avoid negative values
+    sq_dists = torch.clamp(2.0 - 2.0 * dots, min=0.0)
+    # Avoid zero distance derivative singularity
+    dists = torch.sqrt(sq_dists + 1e-12)
+    dists.fill_diagonal_(float('inf'))
+    # Mask same-origin crop pairs if using multi-crop
+    if crop_mask is not None:
+        dists.masked_fill_(crop_mask, float('inf'))
+    min_dist = dists.min(dim=1).values
+    loss = -torch.log(min_dist.clamp(min=1e-7)).mean()
+```
+User: That completely fixed the NaN at step 320. Forcing the distance computation to FP32 inside the autocast context and clamping the square root radicand kept gradients stable.
+Assistant: Always compute distance matrices and log-partition regularizers in float32 even when the backbone runs in FP16.

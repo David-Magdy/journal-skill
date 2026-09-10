@@ -1,0 +1,29 @@
+User: Our Go data aggregation service's resident memory keeps climbing linearly until OOM. We took a pprof heap profile, but heap allocations look normal.
+Assistant: Have you checked the goroutine count in pprof? Goroutines have their own 2KB stacks and aren't tracked as standard heap allocations until they accumulate.
+User: Running `curl http://localhost:6060/debug/pprof/goroutine?debug=1 | head -n 20`:
+```text
+goroutine profile: total 142850
+142800 @ 0x43be75 0x44b923 0x76a1bc ...
+#   0x76a1bb    main.fetchShard.func1 +0x7b  worker.go:42
+```
+Almost all 142,800 goroutines are stuck at `worker.go:42`. Here is the code:
+```go
+func queryAll(ctx context.Context, shards []Shard) ([]Result, error) {
+    ch := make(chan Result)
+    for _, s := range shards {
+        go func(shard Shard) {
+            res := shard.Query()
+            ch <- res // line 42
+        }(s)
+    }
+    select {
+    case res := <-ch:
+        return []Result{res}, nil
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+```
+Assistant: Look at line 42: `ch` is an unbuffered channel (`make(chan Result)`). If one shard completes or the context times out, `queryAll` returns immediately. The remaining worker goroutines block forever on `ch <- res` because there is no active receiver.
+User: So making `ch := make(chan Result, len(shards))` lets every spawned goroutine send without blocking even after `queryAll` has returned?
+Assistant: Yes, buffering to the worker count ensures writes never block, allowing the goroutines to complete and their stacks to be reclaimed by the runtime. Alternatively, check `select { case ch <- res: case <-ctx.Done(): }`.

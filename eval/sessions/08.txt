@@ -1,0 +1,31 @@
+User: I am attempting to capture our transformer inference loop into a CUDA Graph using PyTorch to eliminate Python CPU launch overhead:
+```python
+g = torch.cuda.CUDAGraph()
+# Warmup
+s = torch.cuda.Stream()
+s.wait_stream(torch.cuda.current_stream())
+with torch.cuda.stream(s):
+    for _ in range(3):
+        out = model(static_input)
+torch.cuda.current_stream().wait_stream(s)
+
+# Capture
+with torch.cuda.graph(g):
+    static_output = model(static_input)
+```
+During the capture step, it crashes with:
+`RuntimeError: CUDA driver error: operation not permitted when stream is capturing`
+Assistant: CUDA Graph capture records a static dependency graph of CUDA kernel launches on the GPU. Any CPU-GPU synchronization, dynamic CPU-side branching based on GPU data, or host-managed memory allocations during the capture stream are forbidden by the CUDA driver.
+User: Where in my model is host synchronization happening?
+Assistant: Look for calls that convert GPU tensors to CPU values: `.item()`, `.cpu()`, `print(tensor)`, `bool(tensor)`, or tensor-dependent `if` conditions. Run PyTorch with CUDA launch blocking to isolate the exact line:
+```bash
+CUDA_LAUNCH_BLOCKING=1 python infer.py
+```
+User: Found it! In the causal attention mask:
+```python
+if key_padding_mask is not None and key_padding_mask.any().item():
+    attn_weights = attn_weights.masked_fill(key_padding_mask, -1e4)
+```
+Calling `key_padding_mask.any().item()` forces a synchronous copy from GPU VRAM to CPU RAM to evaluate the Python `if`.
+Assistant: Exactly. Replace that dynamic check with unconditional tensor masking or compile separate graphs for padded vs unpadded inputs. Also ensure memory pool sharing with `torch.cuda.graph(g, pool=mempool)`.
+User: Replaced `.item()` with an unconditional `torch.where` mask. The graph captured successfully, and inference latency dropped from 1.4ms to 0.31ms.

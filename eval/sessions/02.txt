@@ -1,0 +1,16 @@
+User: I moved my ViT DINO training to a smaller local GPU and reduced per-device batch size from 256 to 16 with 16 gradient accumulation steps. But with batch size 16, the KoLeo loss isn't preventing collapse anymore. Cosine similarity is creeping back up to 0.91.
+Assistant: Kozachenko-Leonenko is a non-parametric nearest-neighbor estimator. In high dimensions (e.g. D=768 for ViT-B), a batch of 16 points is far too sparse to approximate local manifold density. The minimum distance to another point in the batch reflects random ambient sparsity rather than true local clustering.
+User: Can I just evaluate KoLeo across gradient accumulation steps?
+Assistant: You cannot backprop across backward passes easily, but you can maintain a detached memory queue of normalized embeddings from recent iterations. For each sample in the active batch (B=16), compute nearest-neighbor distance against the union of the batch and the queue (e.g., Q=1024):
+```python
+# embeddings: (B, D) with gradients
+# queue: (Q, D) detached
+all_candidates = torch.cat([embeddings, queue.detach()], dim=0)
+dists = torch.cdist(embeddings, all_candidates) # (B, B + Q)
+# Mask self-comparison on the leading BxB block
+dists[:, :B].fill_diagonal_(float('inf'))
+min_dists = dists.min(dim=1).values
+loss_koleo = -torch.mean(torch.log(min_dists + 1e-8))
+```
+User: That immediately stabilized it! Even with physical batch size 16, using a detached FIFO queue of 512 samples restored the dispersion effect, and loss dropped back down.
+Assistant: Exactly. The gradients flow through the query embeddings in the current mini-batch, while the queue supplies the ambient reference density needed for reliable nearest-neighbor estimation.

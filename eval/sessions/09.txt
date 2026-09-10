@@ -1,0 +1,23 @@
+User: I am generating presigned S3 upload URLs using temporary credentials assumed via AWS STS, but clients receive 403 `SignatureDoesNotMatch`. Here is the debug snippet with my temporary credentials:
+```bash
+export AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+export AWS_SESSION_TOKEN=AQoDYXdzEJr1234567890abcdefghijklmnopqrstuvwxyzSECRETTOKEN
+aws s3 presign s3://internal-datasets/upload.bin --expires-in 3600
+```
+When our upload script curls the presigned URL, AWS returns:
+`<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided.</Message></Error>`
+Assistant: Notice your access key prefix: `ASIA...` indicates temporary credentials issued by STS AssumeRole, which always requires a session token. When you generate a presigned URL using `ASIA` credentials, the session token must be embedded into the URL query parameters as `X-Amz-Security-Token`.
+User: If I generate the URL using boto3:
+```python
+s3 = boto3.client('s3',
+    aws_access_key_id="ASIAIOSFODNN7EXAMPLE",
+    aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    aws_session_token="AQoDYXdzEJr1234567890abcdefghijklmnopqrstuvwxyzSECRETTOKEN"
+)
+url = s3.generate_presigned_url('put_object', Params={'Bucket': 'internal-datasets', 'Key': 'upload.bin'})
+```
+Does boto3 automatically include `X-Amz-Security-Token` in the query parameters?
+Assistant: Yes, boto3 will include `X-Amz-Security-Token=<token>` in the query string. However, if a client or gateway strips query parameters, or if the client sets an `Authorization` header on the curl request, S3 evaluates the authorization header instead of the presigned query signature, triggering `SignatureDoesNotMatch`.
+User: That was it! Our curl wrapper was injecting an extra default `Authorization: Bearer ...` header, which clashed with the SigV4 query string authentication. Removing that header made the presigned PUT work.
+Assistant: Always ensure clients making presigned S3 requests do not supply any conflicting `Authorization` headers.
