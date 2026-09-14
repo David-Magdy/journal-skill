@@ -11,17 +11,26 @@ No cloud dependency. All extraction, deduplication, and note writes run locally 
 
 ## Installation & Updating
 
-### Install
+### Install All Skills (Recommended)
 ```bash
-npx skills add David-Magdy/journal-skill
+npx skills add David-Magdy/journal-skill --all
+```
+
+Or install individual skills:
+```bash
+npx skills add David-Magdy/journal-skill --skill journal
+npx skills add David-Magdy/journal-skill --skill journal-setup
+npx skills add David-Magdy/journal-skill --skill journal-list
 ```
 
 ### Update (for users on older versions)
-To update an existing installation to the latest version:
+To update existing installations to the latest version:
 ```bash
-npx skills update journal
-# or update all installed skills
 npx skills update
+# or update a specific skill
+npx skills update journal
+npx skills update journal-setup
+npx skills update journal-list
 ```
 
 ---
