@@ -5,6 +5,17 @@ from pathlib import Path
 import re
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 
 DEFAULT_VAULT = "~/notes/AcademicVault"
 DEFAULT_CATEGORIES = [
@@ -362,6 +373,15 @@ def _resolve_vault_path(vault, target_path):
     return target
 
 
+def _get_tree_connectors():
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "├── └── │   ".encode(encoding)
+        return ("├── ", "└── ", "│   ", "    ")
+    except (UnicodeEncodeError, LookupError):
+        return ("|-- ", "\\-- ", "|   ", "    ")
+
+
 def generate_tree(vault, include_meta=False):
     root = Path(vault).expanduser().resolve()
     if not root.exists():
@@ -370,6 +390,8 @@ def generate_tree(vault, include_meta=False):
     ignore_dirs = {".git", ".obsidian", ".trash", ".idea", ".vscode", "__pycache__"}
     if not include_meta:
         ignore_dirs.add("Meta")
+
+    branch, last_branch, pipe, space = _get_tree_connectors()
 
     def _build_tree(directory, prefix=""):
         lines = []
@@ -385,10 +407,10 @@ def generate_tree(vault, include_meta=False):
 
         for i, item in enumerate(entries):
             is_last = (i == len(entries) - 1)
-            connector = "└── " if is_last else "├── "
+            connector = last_branch if is_last else branch
             if item.is_dir():
                 lines.append(f"{prefix}{connector}{item.name}/")
-                extension = "    " if is_last else "│   "
+                extension = space if is_last else pipe
                 lines.extend(_build_tree(item, prefix + extension))
             else:
                 lines.append(f"{prefix}{connector}{item.name}")

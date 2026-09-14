@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,10 +13,15 @@ SCRIPT = ROOT / "scripts" / "journal.py"
 
 class JournalTests(unittest.TestCase):
     def run_cli(self, *args, input=None):
+        env = dict(os.environ)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         return subprocess.run(
             [sys.executable, str(SCRIPT), *map(str, args)],
             cwd=ROOT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
             capture_output=True,
             input=input,
             check=True,
