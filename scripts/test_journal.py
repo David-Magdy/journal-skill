@@ -140,6 +140,102 @@ private
         self.assertEqual(output["messages"][0]["content"], "recent message")
         self.assertTrue(output["truncated"])
 
+    def test_conditional_headers_omitted_when_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vault"
+            self.setup_vault(root)
+            self.run_cli(
+                "capture", "--vault", root, "--title", "Clean Note", "--category", "Dev & Environment",
+                "--summary", "Only conceptual summary.",
+            )
+            content = (root / "Dev & Environment" / "Clean Note.md").read_text()
+            self.assertIn("## Conceptual Core", content)
+            self.assertNotIn("## Bug / Edge Case Encountered", content)
+            self.assertNotIn("## Key CLI Commands & Environment Tricks", content)
+            self.assertNotIn("None recorded.", content)
+            self.assertNotIn("*None recorded.*", content)
+
+    def test_headers_included_when_content_present(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vault"
+            self.setup_vault(root)
+            self.run_cli(
+                "capture", "--vault", root, "--title", "Full Note", "--category", "Dev & Environment",
+                "--summary", "Concept summary.",
+                "--bug", "OOM on GPU buffer allocation.",
+                "--commands", "nvidia-smi --query-gpu=memory.used",
+            )
+            content = (root / "Dev & Environment" / "Full Note.md").read_text()
+            self.assertIn("## Conceptual Core", content)
+            self.assertIn("## Bug / Edge Case Encountered", content)
+            self.assertIn("OOM on GPU buffer allocation.", content)
+            self.assertIn("## Key CLI Commands & Environment Tricks", content)
+            self.assertIn("nvidia-smi", content)
+            self.assertNotIn("None recorded.", content)
+            self.assertNotIn("*None recorded.*", content)
+
+    def test_setup_with_custom_categories_and_create_dirs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vault"
+            self.run_cli(
+                "setup", "--vault", root,
+                "--categories", "Research,Distributed Systems,Playground",
+                "--create-dirs", "-y"
+            )
+            config = json.loads((root / "Meta" / "journal.config.json").read_text())
+            self.assertEqual(config["categories"], ["Research", "Distributed Systems", "Playground"])
+            self.assertTrue((root / "Research").is_dir())
+            self.assertTrue((root / "Distributed Systems").is_dir())
+            self.assertTrue((root / "Playground").is_dir())
+
+    def test_list_command_tree_and_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vault"
+            self.setup_vault(root)
+            self.run_cli(
+                "capture", "--vault", root, "--title", "Alpha", "--category", "Dev & Environment",
+                "--summary", "Alpha summary.",
+            )
+            # Text tree test
+            res_tree = self.run_cli("list", "--vault", root)
+            self.assertIn("Dev & Environment/", res_tree.stdout)
+            self.assertIn("Alpha.md", res_tree.stdout)
+            self.assertNotIn("Meta/", res_tree.stdout)
+
+            # JSON tree test
+            res_json = self.run_cli("list", "--vault", root, "--json")
+            data = json.loads(res_json.stdout)
+            self.assertEqual(data["name"], "vault")
+            names = [child["name"] for child in data["tree"]]
+            self.assertIn("Dev & Environment", names)
+
+    def test_file_automation_clone_move_remove(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vault"
+            self.setup_vault(root)
+            self.run_cli(
+                "capture", "--vault", root, "--title", "Original", "--category", "Dev & Environment",
+                "--summary", "Original content.",
+            )
+            orig_file = root / "Dev & Environment" / "Original.md"
+            self.assertTrue(orig_file.exists())
+
+            # Clone
+            self.run_cli("clone", "--vault", root, "--source", "Dev & Environment/Original.md", "--target", "Dev & Environment/Cloned.md")
+            cloned_file = root / "Dev & Environment" / "Cloned.md"
+            self.assertTrue(cloned_file.exists())
+            self.assertIn("# Cloned", cloned_file.read_text())
+
+            # Move
+            self.run_cli("move", "--vault", root, "--source", "Dev & Environment/Cloned.md", "--target", "Dev & Environment/Moved.md")
+            moved_file = root / "Dev & Environment" / "Moved.md"
+            self.assertTrue(moved_file.exists())
+            self.assertFalse(cloned_file.exists())
+
+            # Remove
+            self.run_cli("remove", "--vault", root, "--path", "Dev & Environment/Moved.md")
+            self.assertFalse(moved_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

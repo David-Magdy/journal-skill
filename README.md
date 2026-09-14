@@ -1,50 +1,90 @@
 # journal-skill
 
+[![CI](https://img.shields.io/github/actions/workflow/status/David-Magdy/journal-skill/ci.yml?branch=main&label=CI)](https://github.com/David-Magdy/journal-skill/actions/workflows/ci.yml)
+[![skills.sh](https://www.skills.sh/b/David-Magdy/journal-skill)](https://www.skills.sh/David-Magdy/journal-skill)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+
 A portable coding-agent skill that extracts and journals what **you** learned during a coding session (not codebase state or repo summaries) directly into your local Markdown or Obsidian vault.
 
 No cloud dependency. All extraction, deduplication, and note writes run locally through your coding agent.
 
-## Development checks
+## Installation & Updating
 
-```bash
-python -m unittest discover -s scripts -p "test_*.py"
-python -m py_compile scripts/journal.py
-npx -y skills add . --list
-```
-
-## Installation
-
-Install with:
-
+### Install
 ```bash
 npx skills add David-Magdy/journal-skill
 ```
 
-## Setup
-
-Run the setup command to configure your vault location and note preferences.
-
-### Interactive
-
-```text
-/journal-setup
+### Update (for users on older versions)
+To update an existing installation to the latest version:
+```bash
+npx skills update journal
+# or update all installed skills
+npx skills update
 ```
 
-Prompts for vault location, taxonomy layout, and note density.
+---
 
-### Non-Interactive
+## Available Commands
+
+The skill provides three integrated commands:
+
+### 1. `/journal-setup`
+Configures or updates your Obsidian vault path and folder taxonomy.
+
+- **Interactive Flow**: Call `/journal-setup`. The agent checks for:
+  1. The absolute path to your Obsidian vault.
+  2. Folder structure preference: whether you want to use the default categories (`AI & Deep Learning`, `Software Engineering & Systems`, `Dev & Environment`) or define custom categories.
+  - If any required detail is missing, the agent prompts you in a reply.
+  - Once all specifications are provided, the agent configures the vault immediately.
+- **Direct / Non-Interactive**:
+  ```bash
+  /journal-setup --vault ~/notes/AcademicVault --categories "AI & Deep Learning,Software Engineering & Systems,Dev & Environment" --create-dirs -y
+  ```
+
+### 2. `/journal`
+Distills what you learned during the conversation into your vault with an interactive confirmation loop.
+
+- **Clean Note Formatting**:
+  - Unnecessary headers and empty placeholders (such as `*None recorded.*`) are **strictly eliminated**.
+  - If no bugs or edge cases occurred in the chat, the bug section will not exist.
+  - If no special CLI commands or environment tricks were used, the command section will not exist.
+  - Only sections with actual content are included in the generated note.
+- **Interactive Preview Loop**:
+  - The agent synthesizes session learnings, redacts sensitive secrets, and tests formatting via `--dry-run`.
+  - In a chat reply, the agent displays a brief preview of what will be written (action, path, title, tags, and summary).
+  - The agent **waits for your review**. You can ask for modifications (change title, adjust tags, modify summary, add/remove content) or command to proceed.
+  - The preview cycle continues until you are satisfied.
+  - Upon your confirmation ("proceed", "save", "looks good"), the agent writes the note to disk and confirms the exact file path.
+
+### 3. `/journal-list`
+Inspects your vault structure and supports file automation workflows.
+
+- **Tree Inspection**:
+  - Displays a clean visual ASCII tree of categories and notes in your vault (filtering out hidden folders like `.git` and internal metadata).
+- **File Automation & Modification**:
+  - After displaying the tree, the agent awaits your command. You can ask the agent to:
+    - **Modify**: Update note contents, frontmatter, categories, or tags.
+    - **Remove**: Delete a specific note or empty folder category.
+    - **Add**: Create a new note or folder category.
+    - **CloneTo**: Duplicate an existing note under a new name or category.
+    - **Move / Rename**: Reorganize notes across folders.
+    - **Resume**: Return immediately to your regular coding chat.
+
+---
+
+## Development Checks
 
 ```bash
-/journal-setup --vault ~/notes/AcademicVault --categorization topic-first --density conceptual -y
+python3 -m unittest discover -s scripts -p "test_*.py"
+python3 -m py_compile scripts/journal.py
+npx -y skills add . --list
 ```
 
-## Usage
+---
 
-- `/journal` — Distill learnings from the current session into the configured vault.
-- `/journal <prompt>` — Distill with specific steering (e.g. `/journal focus on the CUDA memory allocator`).
-- `/journal --category ... --title ... --dry-run` — Explicitly target a category and title, previewing the note output without writing to disk.
-
-## Configuration Overrides
+## Configuration
 
 Configuration is stored at `<vault>/Meta/journal.config.json`:
 
@@ -71,13 +111,15 @@ Configuration is stored at `<vault>/Meta/journal.config.json`:
 - `vault_path`: Target directory path for the Markdown/Obsidian vault.
 - `categorization`: Layout strategy (`topic-first`, `project-first`, or `manual`).
 - `density`: Note detail level (`conceptual` or `conceptual+snippets`).
-- `categories`: Array of string category names. Non-coding users can replace the default tree with their own domain topics (e.g. `["biology", "microscopy", "lab-ops"]`).
+- `categories`: Array of string category names. Can be customized to your specific domain (e.g. `["Research", "Projects", "Notes"]`).
 - `duplicate_match_threshold`: Score threshold for linking related sessions to an existing note instead of creating a separate note.
 - `context_window`: Session history limits in messages and approximate tokens.
 - `redaction.include_internal_refs`: Boolean flag (default `false`). When `false`, internal project identifiers, private repo names, and local machine paths are scrubbed.
 
+---
+
 ## Privacy & Redaction
 
-- **Mandatory redaction step**: A local script sanitizes API keys, authorization tokens, passwords, and private IP addresses before notes are formatted.
-- **Internal reference scrubbing**: Internal hostnames, IPs, and local references are omitted by default; passing `--include-internal-refs` or setting `redaction.include_internal_refs: true` is an explicit opt-in.
-- **Local execution**: Notes are written directly to your local filesystem. No data is sent to external journaling APIs or third-party analytics services.
+- **Mandatory Redaction Step**: A local script sanitizes API keys, authorization tokens, passwords, and private IP addresses before notes are previewed or formatted.
+- **Internal Reference Scrubbing**: Internal hostnames, IPs, and local references are omitted by default; passing `--include-internal-refs` or setting `redaction.include_internal_refs: true` is an explicit opt-in.
+- **Local Execution**: Notes are written directly to your local filesystem. No data is sent to external journaling APIs or third-party analytics services.

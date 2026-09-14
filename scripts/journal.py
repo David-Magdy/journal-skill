@@ -31,7 +31,13 @@ def _read_config(vault, required=False):
         raise ValueError(f"could not read journal config: {path}: {exc}") from exc
 
 
-def setup_vault(vault=DEFAULT_VAULT, categorization="topic-first", density="conceptual"):
+def setup_vault(
+    vault=DEFAULT_VAULT,
+    categorization="topic-first",
+    density="conceptual",
+    categories=None,
+    create_dirs=False,
+):
     if categorization not in {"topic-first", "project-first", "manual"}:
         raise ValueError("categorization must be topic-first, project-first, or manual")
     if density not in {"conceptual", "conceptual+snippets"}:
@@ -39,28 +45,53 @@ def setup_vault(vault=DEFAULT_VAULT, categorization="topic-first", density="conc
     root = Path(vault).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     (root / "Meta").mkdir(exist_ok=True)
+
+    if categories is None:
+        category_list = list(DEFAULT_CATEGORIES)
+    elif isinstance(categories, (list, tuple)):
+        category_list = [str(cat).strip() for cat in categories if str(cat).strip()]
+    elif isinstance(categories, str):
+        category_list = [cat.strip() for cat in categories.split(",") if cat.strip()]
+    else:
+        category_list = list(DEFAULT_CATEGORIES)
+
+    if not category_list:
+        category_list = list(DEFAULT_CATEGORIES)
+
+    if create_dirs:
+        for cat in category_list:
+            (root / cat).mkdir(parents=True, exist_ok=True)
+
     config = {
         "vault_path": str(root),
         "categorization": categorization,
         "density": density,
-        "categories": DEFAULT_CATEGORIES,
+        "categories": category_list,
         "duplicate_match_threshold": 0.6,
         "context_window": {"max_messages": 40, "max_tokens": 8000},
         "redaction": {"include_internal_refs": False},
     }
     _config_path(root).write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    cats_md = "\n".join(f"- {c}" for c in category_list)
     (root / "Meta" / "agent.md").write_text(
         "# Journal Skill Rules\n\n"
         f"- Vault root: {root}\n"
         f"- Categorization mode: {categorization}\n"
-        f"- Density: {density}\n\n"
-        "## On every /journal call:\n"
-        "1. Read journal.config.json in this file's directory.\n"
-        "2. Run duplicate search before writing anything (see PRD 4.3).\n"
-        "3. Redact secrets per PRD 4.4 before writing or displaying content.\n"
-        "4. Respect the context window limits in journal.config.json.\n"
-        "5. Never overwrite existing note content — append dated entries only.\n"
-        "6. Report the file path written/updated to the user as the final action.\n",
+        f"- Density: {density}\n"
+        f"- Configured Categories:\n{cats_md}\n\n"
+        "## Commands & Workflows:\n"
+        "1. /journal-setup: Configure vault path and folder structure.\n"
+        "2. /journal: Synthesize learnings, display brief preview, wait for user confirmation/modifications before writing.\n"
+        "3. /journal-list: Display vault folder tree, await file automation commands (modify, remove, add, cloneTo, move) or resume work.\n\n"
+        "## Note Formatting Rules:\n"
+        "- Only document user learnings, not repository state.\n"
+        "- Never include empty headers or placeholder text (*None recorded.*).\n"
+        "- Only include sections (Conceptual Core, Bug, Key Commands) when relevant content exists.\n"
+        "- Run duplicate search before writing anything.\n"
+        "- Redact secrets before writing or displaying content.\n"
+        "- Respect context window limits.\n"
+        "- Never overwrite existing note content — append dated entries only.\n"
+        "- Report the file path written/updated to the user.\n",
         encoding="utf-8",
     )
     return config
@@ -255,12 +286,18 @@ def capture_note(
     redaction_line = f"> {REDACTED}\n\n" if stripped else ""
     if result["match"]:
         path = Path(result["match"])
-        summary_line = _compact(clean_summary) or "None recorded."
-        section = f"## Related Session ({today})\n- {summary_line}\n"
+        items = []
+        if clean_summary.strip():
+            items.append(f"- {_compact(clean_summary)}")
         if clean_bug.strip():
-            section += f"- Bug: {_compact(clean_bug)}\n"
+            items.append(f"- Bug: {_compact(clean_bug)}")
         if clean_commands.strip():
-            section += f"- Commands: {_compact(clean_commands)}\n"
+            items.append(f"- Commands: {_compact(clean_commands)}")
+        content_lines = "\n".join(items)
+        if content_lines:
+            section = f"## Related Session ({today})\n{content_lines}\n"
+        else:
+            section = f"## Related Session ({today})\n"
         if stripped:
             section += f"{redaction_line}"
         existing = path.read_text(encoding="utf-8", errors="replace")
@@ -272,6 +309,19 @@ def capture_note(
             count = window_n if window_n is not None else config.get("context_window", {}).get("max_messages", 40)
             callout = f"> Summarized from the last {count} messages; earlier session content not included.\n\n"
         tags_text = ", ".join(["concept", "learning", *extra_tags])
+
+        sections = []
+        if linked.strip():
+            sections.append(f"## Conceptual Core\n{linked.strip()}")
+        if clean_bug.strip():
+            sections.append(f"## Bug / Edge Case Encountered\n{clean_bug.strip()}")
+        if clean_commands.strip():
+            sections.append(f"## Key CLI Commands & Environment Tricks\n{clean_commands.strip()}")
+
+        body = "\n\n".join(sections)
+        if body:
+            body = body + "\n"
+
         would_write = (
             "---\n"
             f"date: {today}\n"
@@ -282,13 +332,9 @@ def capture_note(
             f"# {clean_title}\n\n"
             f"{callout}"
             f"{redaction_line}"
-            "## Conceptual Core\n"
-            f"{linked.strip()}\n\n"
-            "## Bug / Edge Case Encountered\n"
-            f"{clean_bug.strip() or '*None recorded.*'}\n\n"
-            "## Key CLI Commands & Environment Tricks\n"
-            f"{clean_commands.strip() or '*None recorded.*'}\n"
+            f"{body}"
         )
+        would_write = would_write.rstrip() + "\n"
         path = destination
     if dry_run:
         return would_write
@@ -301,6 +347,171 @@ def capture_note(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(would_write, encoding="utf-8")
     return str(path.resolve())
+
+
+def _resolve_vault_path(vault, target_path):
+    root = Path(vault).expanduser().resolve()
+    target = Path(target_path)
+    if not target.is_absolute():
+        target = root / target
+    target = target.resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise ValueError(f"path '{target_path}' is outside vault root '{root}'")
+    return target
+
+
+def generate_tree(vault, include_meta=False):
+    root = Path(vault).expanduser().resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"vault path not found: {root}")
+
+    ignore_dirs = {".git", ".obsidian", ".trash", ".idea", ".vscode", "__pycache__"}
+    if not include_meta:
+        ignore_dirs.add("Meta")
+
+    def _build_tree(directory, prefix=""):
+        lines = []
+        entries = []
+        try:
+            for item in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                if item.name in ignore_dirs or item.name.startswith("."):
+                    continue
+                if item.is_dir() or (item.is_file() and item.suffix == ".md"):
+                    entries.append(item)
+        except OSError:
+            return lines
+
+        for i, item in enumerate(entries):
+            is_last = (i == len(entries) - 1)
+            connector = "└── " if is_last else "├── "
+            if item.is_dir():
+                lines.append(f"{prefix}{connector}{item.name}/")
+                extension = "    " if is_last else "│   "
+                lines.extend(_build_tree(item, prefix + extension))
+            else:
+                lines.append(f"{prefix}{connector}{item.name}")
+        return lines
+
+    tree_lines = [f"{root.name}/"] + _build_tree(root)
+    return "\n".join(tree_lines)
+
+
+def tree_to_dict(vault, include_meta=False):
+    root = Path(vault).expanduser().resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"vault path not found: {root}")
+
+    ignore_dirs = {".git", ".obsidian", ".trash", ".idea", ".vscode", "__pycache__"}
+    if not include_meta:
+        ignore_dirs.add("Meta")
+
+    def _dir_to_dict(path):
+        children = []
+        for item in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if item.name in ignore_dirs or item.name.startswith("."):
+                continue
+            if item.is_dir():
+                children.append({
+                    "name": item.name,
+                    "type": "directory",
+                    "children": _dir_to_dict(item),
+                })
+            elif item.is_file() and item.suffix == ".md":
+                children.append({
+                    "name": item.name,
+                    "type": "file",
+                    "path": str(item.relative_to(root)),
+                })
+        return children
+
+    return {
+        "vault": str(root),
+        "name": root.name,
+        "tree": _dir_to_dict(root),
+    }
+
+
+def clone_note(vault, source, target):
+    root = Path(vault).expanduser().resolve()
+    src_path = _resolve_vault_path(vault, source)
+    if not src_path.is_file():
+        if (src_path.parent / (src_path.name + ".md")).is_file():
+            src_path = src_path.parent / (src_path.name + ".md")
+        else:
+            raise FileNotFoundError(f"source note not found: {source}")
+
+    tgt_path = _resolve_vault_path(vault, target)
+    if not tgt_path.suffix:
+        tgt_path = tgt_path.with_suffix(".md")
+
+    if tgt_path.exists():
+        raise FileExistsError(f"target note already exists: {tgt_path}")
+
+    tgt_path.parent.mkdir(parents=True, exist_ok=True)
+    content = src_path.read_text(encoding="utf-8")
+    target_title = tgt_path.stem
+    lines = content.splitlines()
+    updated_lines = []
+    for line in lines:
+        if line.startswith("# ") and line[2:].strip() == src_path.stem:
+            updated_lines.append(f"# {target_title}")
+        else:
+            updated_lines.append(line)
+
+    final_content = "\n".join(updated_lines) + ("\n" if content.endswith("\n") else "")
+    tgt_path.write_text(final_content, encoding="utf-8")
+    return str(tgt_path.resolve())
+
+
+def remove_item(vault, target, force=False):
+    root = Path(vault).expanduser().resolve()
+    tgt_path = _resolve_vault_path(vault, target)
+    if not tgt_path.exists():
+        if (tgt_path.parent / (tgt_path.name + ".md")).exists():
+            tgt_path = tgt_path.parent / (tgt_path.name + ".md")
+        else:
+            raise FileNotFoundError(f"target path not found: {target}")
+
+    if tgt_path == root:
+        raise ValueError("cannot remove vault root")
+
+    if tgt_path.is_file():
+        tgt_path.unlink()
+    elif tgt_path.is_dir():
+        if force:
+            import shutil
+            shutil.rmtree(tgt_path)
+        else:
+            tgt_path.rmdir()
+    return str(tgt_path.resolve())
+
+
+def move_item(vault, source, target):
+    root = Path(vault).expanduser().resolve()
+    src_path = _resolve_vault_path(vault, source)
+    if not src_path.exists():
+        if (src_path.parent / (src_path.name + ".md")).exists():
+            src_path = src_path.parent / (src_path.name + ".md")
+        else:
+            raise FileNotFoundError(f"source path not found: {source}")
+
+    if src_path == root:
+        raise ValueError("cannot move vault root")
+
+    tgt_path = _resolve_vault_path(vault, target)
+    if tgt_path.is_dir():
+        tgt_path = tgt_path / src_path.name
+    elif not tgt_path.suffix and src_path.is_file():
+        tgt_path = tgt_path.with_suffix(".md")
+
+    if tgt_path.exists():
+        raise FileExistsError(f"target path already exists: {tgt_path}")
+
+    tgt_path.parent.mkdir(parents=True, exist_ok=True)
+    src_path.rename(tgt_path)
+    return str(tgt_path.resolve())
 
 
 def _prompt(label, default, choices=None):
@@ -318,6 +529,8 @@ def main(argv=None):
     setup.add_argument("--vault", default=DEFAULT_VAULT)
     setup.add_argument("--categorization", choices=["topic-first", "project-first", "manual"], default="topic-first")
     setup.add_argument("--density", choices=["conceptual", "conceptual+snippets"], default="conceptual")
+    setup.add_argument("--categories", help="Comma-separated list of category folders or custom folder structure")
+    setup.add_argument("--create-dirs", action="store_true", help="Pre-create category directories")
     setup.add_argument("-y", action="store_true")
 
     find = subparsers.add_parser("find")
@@ -345,17 +558,42 @@ def main(argv=None):
     window.add_argument("--max-messages", type=int)
     window.add_argument("--max-tokens", type=int)
 
+    list_cmd = subparsers.add_parser("list")
+    list_cmd.add_argument("--vault", default=DEFAULT_VAULT)
+    list_cmd.add_argument("--json", action="store_true")
+    list_cmd.add_argument("--include-meta", action="store_true")
+
+    clone_cmd = subparsers.add_parser("clone")
+    clone_cmd.add_argument("--vault", required=True)
+    clone_cmd.add_argument("--source", required=True)
+    clone_cmd.add_argument("--target", required=True)
+
+    remove_cmd = subparsers.add_parser("remove")
+    remove_cmd.add_argument("--vault", required=True)
+    remove_cmd.add_argument("--path", required=True)
+    remove_cmd.add_argument("--force", action="store_true")
+
+    move_cmd = subparsers.add_parser("move")
+    move_cmd.add_argument("--vault", required=True)
+    move_cmd.add_argument("--source", required=True)
+    move_cmd.add_argument("--target", required=True)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "setup":
             vault, categorization, density = args.vault, args.categorization, args.density
+            categories = args.categories
+            create_dirs = args.create_dirs
             if not args.y:
                 if not sys.stdin.isatty():
                     raise ValueError("setup requires -y when stdin is not a tty")
                 vault = _prompt("Vault path", vault)
                 categorization = _prompt("Categorization", categorization, ["topic-first", "project-first", "manual"])
                 density = _prompt("Density", density, ["conceptual", "conceptual+snippets"])
-            config = setup_vault(vault, categorization, density)
+                cat_input = _prompt("Categories (comma-separated, leave blank for default)", "")
+                if cat_input.strip():
+                    categories = cat_input
+            config = setup_vault(vault, categorization, density, categories=categories, create_dirs=create_dirs)
             print(f"Resolved vault path: {config['vault_path']}")
             print(json.dumps(config, indent=2))
             return 0
@@ -380,6 +618,24 @@ def main(argv=None):
                 "max_messages": max_messages,
                 "max_tokens": max_tokens,
             }))
+            return 0
+        if args.command == "list":
+            if args.json:
+                print(json.dumps(tree_to_dict(args.vault, include_meta=args.include_meta), indent=2))
+            else:
+                print(generate_tree(args.vault, include_meta=args.include_meta))
+            return 0
+        if args.command == "clone":
+            out = clone_note(args.vault, args.source, args.target)
+            print(out)
+            return 0
+        if args.command == "remove":
+            out = remove_item(args.vault, args.path, force=args.force)
+            print(f"Removed: {out}")
+            return 0
+        if args.command == "move":
+            out = move_item(args.vault, args.source, args.target)
+            print(f"Moved to: {out}")
             return 0
         output = capture_note(
             args.vault,
